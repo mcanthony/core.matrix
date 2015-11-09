@@ -322,7 +322,7 @@
      triangular part. P returned as a primitive int permutation array.
      Returns a vector of two values: first is integer (-1)^n, where n is
      a number of permutations, and second is a primitive int permutations
-     array.
+     array. Returns nil if the matrix is singular
      This function is translated from GNU linear algebra library, namely
      `gsl_linalg_LU_decomp` (see [[lu]] for example). Python translation that
      was used to implement this can be found at [[lupy]]."
@@ -338,39 +338,39 @@
             ;; sign of determinant
             sign (int-array [1])]
         ;; for all columns
-        (c-for [j (int 0) (< j (dec n)) (inc j)]
-          (let [i-pivot
-                (loop [i (inc j)
-                       max-i j
-                       max (Math/abs (aget-2d* m j j))]
-                  (if (< i n)
-                    (let [current (Math/abs (aget-2d* m i j))]
-                      (if (< max current)
-                        (recur (inc i) i current)
-                        (recur (inc i) max-i max)))
-                    (do (iae-when-not (not (== max 0))
-                          "lu-decompose can't decompose singular matrix")
-                        max-i)))
-                pivot (aget-2d* m i-pivot j)]
-            ;; when maximum element is not on diagonal, swap rows, update
-            ;; permutations and permutation counter
-            (when-not (== i-pivot j)
-              (c-for [k (int 0) (< k n) (inc k)]
-                (let [swap (aget-2d* m i-pivot k)]
-                  (aset-2d* m i-pivot k (aget-2d* m j k))
-                  (aset-2d* m j k swap)))
-              (let [swap (aget permutations i-pivot)]
-                (aset permutations i-pivot (aget permutations j))
-                (aset permutations j swap))
-              (aset sign 0 (* -1 (aget sign 0))))
-            (c-for [i (inc j) (< i n) (inc i)]
-              (let [scaled (/ (aget-2d* m i j) pivot)]
-                (aset-2d* m i j scaled)
-                (c-for [k (inc j) (< k n) (inc k)]
-                  (aset-2d* m i k (- (aget-2d* m i k)
-                                     (* (aget-2d* m j k)
-                                        scaled))))))))
-        [(aget sign 0) permutations]))))
+        (loop [j (int 0)]
+          (if (< j (dec n))
+            (let [[pivot i-pivot]
+                  (loop [i (inc j)
+                         max-i j
+                         max (Math/abs (aget-2d* m j j))]
+                    (if (< i n)
+                      (let [current (Math/abs (aget-2d* m i j))]
+                        (if (< max current)
+                          (recur (inc i) i current)
+                          (recur (inc i) max-i max)))
+                      [(aget-2d* m max-i j) max-i]))]
+              (when-not (== pivot 0)
+                ;; when maximum element is not on diagonal, swap rows, update
+                ;; permutations and permutation counter
+                (when-not (== i-pivot j)
+                  (c-for [k (int 0) (< k n) (inc k)]
+                    (let [swap (aget-2d* m i-pivot k)]
+                      (aset-2d* m i-pivot k (aget-2d* m j k))
+                      (aset-2d* m j k swap)))
+                  (let [swap (aget permutations i-pivot)]
+                    (aset permutations i-pivot (aget permutations j))
+                    (aset permutations j swap))
+                  (aset sign 0 (* -1 (aget sign 0))))
+                (c-for [i (inc j) (< i n) (inc i)]
+                  (let [scaled (/ (aget-2d* m i j) pivot)]
+                    (aset-2d* m i j scaled)
+                    (c-for [k (inc j) (< k n) (inc k)]
+                      (aset-2d* m i k (- (aget-2d* m i k)
+                                        (* (aget-2d* m j k)
+                                          scaled))))))
+                (recur (inc j))))
+            [(aget sign 0) permutations]))))))
 
 (magic/with-magic
   [:double]
@@ -423,16 +423,17 @@
             ^typename# m-inverted (empty-ndarray#t [n n])
             lu-output (lu-decompose!#t lu) ; lu-decompose! mutates lu
             ^ints permutations (second lu-output)]
-        (expose-ndarrays [m-inverted]
-          (c-for [i (int 0) (< i n) (inc i)]
-            (c-for [j (int 0) (< j n) (inc j)]
-              (if (== (aget permutations j) i)
-                (aset x j (type-cast# 1))
-                (aset x j (type-cast# 0))))
-            (lu-solve!#t lu permutations x)
-            (c-for [j (int 0) (< j n) (inc j)]
-              (aset-2d* m-inverted j i (aget x j)))))
-        m-inverted))))
+        (when lu-output
+          (expose-ndarrays [m-inverted]
+            (c-for [i (int 0) (< i n) (inc i)]
+              (c-for [j (int 0) (< j n) (inc j)]
+                (if (== (aget permutations j) i)
+                  (aset x j (type-cast# 1))
+                  (aset x j (type-cast# 0))))
+              (lu-solve!#t lu permutations x)
+              (c-for [j (int 0) (< j n) (inc j)]
+                (aset-2d* m-inverted j i (aget x j)))))
+          m-inverted)))))
 
 (magic/with-magic
   [:double]
@@ -448,12 +449,14 @@
             ^typename# lu (mp/clone m)
             lu-output (lu-decompose!#t lu) ; lu-decompose! mutates lu
             sign (first lu-output)]
-        (expose-ndarrays [lu]
-          (loop [i (int 0)
-                 det (type-cast# sign)]
-            (if (< i n)
-              (recur (inc i) (* det (aget-2d* lu i i)))
-              det)))))))
+        (if lu-output
+          (expose-ndarrays [lu]
+            (loop [i (int 0)
+                   det (type-cast# sign)]
+              (if (< i n)
+                (recur (inc i) (* det (aget-2d* lu i i)))
+                det)))
+          (type-cast# 0))))))
 
 (magic/extend-types
   [:long :float :double :object]
@@ -746,7 +749,7 @@
                            row-a 0
                            col-a 0]
                       (if (< row-a nrows)
-                        (if (< col-a ncols) 
+                        (if (< col-a ncols)
                           (if (== (aget data i-a) (aget data-b i-b))
                             (recur (+ i-a step-col-a) (+ i-b step-col-b)
                                    row-a (inc col-a))
